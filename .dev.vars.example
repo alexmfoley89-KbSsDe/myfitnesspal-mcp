@@ -1,0 +1,9 @@
+# Copy to `.dev.vars` for local `wrangler dev`. Never commit the real file.
+# Any long random string; used to encrypt tokens + cached data in KV.
+SESSION_ENCRYPTION_KEY="change-me-to-a-long-random-string"
+# OAuth client credentials of the MyFitnessPal mobile app (see README "Where the
+# client credentials come from").
+MFP_CLIENT_ID=""
+MFP_CLIENT_SECRET=""
+# Optional: comma-separated MFP emails/usernames allowed to connect. Empty = anyone.
+ALLOWED_EMAILS=""

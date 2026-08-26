@@ -1,0 +1,49 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "myfitnesspal-mcp",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-06-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true
+  },
+  "migrations": [
+    {
+      "new_sqlite_classes": ["MyFitnessPalMCP"],
+      "tag": "v1"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "class_name": "MyFitnessPalMCP",
+        "name": "MCP_OBJECT"
+      }
+    ]
+  },
+  "kv_namespaces": [
+    {
+      // OAuth grants/tokens issued to Claude. Created via:
+      //   wrangler kv namespace create MFP_OAUTH_KV
+      "binding": "OAUTH_KV",
+      "id": "7dd70d27627e4c839ea18ce5038f2474"
+    },
+    {
+      // MFP access/refresh tokens + cached diary days (all AES-GCM sealed). Created via:
+      //   wrangler kv namespace create MFP_CACHE
+      "binding": "MFP_CACHE",
+      "id": "e43c8f4faed740418ba04d7115512d62"
+    }
+  ],
+  "vars": {
+    // IANA timezone used to resolve "today"/"last 7 days" for date defaults.
+    "TIME_ZONE": "Europe/London",
+    // Optional: comma-separated MyFitnessPal emails/usernames allowed to connect.
+    // Leave empty to allow any MFP account to connect to this deployment.
+    "ALLOWED_EMAILS": ""
+  }
+  // Secrets (set via `wrangler secret put`):
+  //   SESSION_ENCRYPTION_KEY   (any long random string — seals everything stored in MFP_CACHE)
+  //   MFP_CLIENT_ID            (OAuth client id of the MyFitnessPal mobile app — see README)
+  //   MFP_CLIENT_SECRET        (its client secret)
+}
