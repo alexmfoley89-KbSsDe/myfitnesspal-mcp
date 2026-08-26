@@ -683,26 +683,39 @@ export class MfpClient {
       }
     }
 
-    // Discovery: field sets in order, all types at once.
+    // Discovery. MFP's 400 for an unsupported type names it
+    // ("Unrecognized diary entry type(s): water"), so first drop exactly the
+    // named types and keep the fields; only step down the field set when the
+    // error doesn't name a type.
     if (!result) {
+      let types = [...wantTypes];
+      const rejected: string[] = [];
       let lastErr: unknown;
-      for (const fields of DIARY_FIELD_SETS) {
-        try {
-          const r = await attempt(wantTypes, fields);
-          result = { date, items: r.items, types: wantTypes, fields: [...fields], pages: r.pages, cached: false };
-          break;
-        } catch (err) {
-          lastErr = err;
-          if (!isClientError(err)) throw err;
+      outer: for (const fields of DIARY_FIELD_SETS) {
+        for (let guard = 0; guard < 8; guard++) {
+          try {
+            const r = await attempt(types, fields);
+            result = { date, items: r.items, types, fields: [...fields], pages: r.pages, cached: false };
+            break outer;
+          } catch (err) {
+            if (!isClientError(err)) throw err;
+            lastErr = err;
+            const named = namedRejectedTypes(err, types);
+            if (!named.length) break; // not a type problem: try a smaller field set
+            rejected.push(...named);
+            types = types.filter((t) => !named.includes(t));
+            if (!types.length) throw err;
+          }
         }
       }
-      // Still failing: one type at a time with no fields, dropping the rejected ones.
+
+      // Still failing and the errors never named a type: probe one type at a
+      // time with no fields, then re-try the field sets with the survivors.
       if (!result) {
         const items: Record<string, unknown>[] = [];
         const ok: string[] = [];
-        const rejected: string[] = [];
         let pages = 0;
-        for (const type of wantTypes) {
+        for (const type of types) {
           try {
             const r = await attempt([type], []);
             items.push(...r.items);
@@ -714,8 +727,20 @@ export class MfpClient {
           }
         }
         if (!ok.length) throw lastErr instanceof Error ? lastErr : new MfpApiError("MyFitnessPal rejected every diary request");
-        result = { date, items, types: ok, fields: [], pages, cached: false, rejected_types: rejected };
+        result = { date, items, types: ok, fields: [], pages, cached: false };
+        for (const fields of DIARY_FIELD_SETS) {
+          if (!fields.length) break;
+          try {
+            const r = await attempt(ok, fields);
+            result = { date, items: r.items, types: ok, fields: [...fields], pages: r.pages, cached: false };
+            break;
+          } catch (err) {
+            if (!isClientError(err)) throw err;
+          }
+        }
       }
+
+      if (rejected.length) result.rejected_types = Array.from(new Set(rejected));
       if (!opts.fields) await this.saveDiaryConfig({ types: result.types, fields: result.fields });
     }
 
@@ -751,6 +776,23 @@ export class MfpClient {
 // ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Diary types named in an MFP 4xx body, e.g.
+ * `Unrecognized diary entry type(s): water, steps` → ["water", "steps"].
+ * Only types we actually asked for are returned.
+ */
+export function namedRejectedTypes(err: unknown, requested: readonly string[]): string[] {
+  if (!(err instanceof MfpApiError)) return [];
+  const text = `${err.body ?? ""} ${err.message}`;
+  const m = /unrecogni[sz]ed diary entry type\(?s?\)?\s*:\s*([a-z0-9_,\s"']+)/i.exec(text);
+  if (!m) return [];
+  const named = m[1]
+    .split(/[,\s"']+/)
+    .map((t) => t.trim().toLowerCase())
+    .filter(Boolean);
+  return requested.filter((t) => named.includes(t.toLowerCase()));
+}
 
 function todayIn(timeZone: string, nowMs: number): string {
   return new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(nowMs));

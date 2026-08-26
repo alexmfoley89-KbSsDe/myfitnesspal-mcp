@@ -163,7 +163,7 @@ export function registerTools(server: McpServer, getClient: () => MfpClient, tim
     {
       title: "Daily Nutrition",
       description:
-        "Get one diary day: per-meal and whole-day totals (energy, protein, carbs, net carbs, fibre, sugar, fat and fat subtypes, cholesterol, sodium, potassium, calcium/iron/vitamins as %DV), every food logged with portion and timestamp, water, logged exercise and steps. Defaults to today. Start here for 'what did I eat?' and fuelling-around-training questions.",
+        "Get one diary day: per-meal and whole-day totals (energy, protein, carbs, net carbs, fibre, sugar, fat and fat subtypes, cholesterol, sodium, potassium, calcium/iron/vitamins as %DV), every food logged with portion, water, logged exercise and steps. Custom meals (e.g. an on-bike fuelling meal) come through as their own meal. Caveat: `logged_at` is when the entry was logged, not eaten; treat `consumed_at` as eating time only if present and plausible. Defaults to today.",
       inputSchema: {
         date: ISO_DATE.optional().describe("Diary day, YYYY-MM-DD. Defaults to today."),
         include_foods: z.boolean().default(true).describe("Include the individual food entries (set false for totals only)."),
@@ -206,7 +206,7 @@ export function registerTools(server: McpServer, getClient: () => MfpClient, tim
     {
       title: "Food Log",
       description:
-        "List individual food entries over a date range (default: last 7 days), oldest first, with meal, portion, timestamps and chosen nutrients. Filter by meal name or a text search over food descriptions. Use it to see what was eaten around sessions or to find recurring foods.",
+        "List individual food entries over a date range (default: last 7 days), oldest first, with meal, portion, timestamps and chosen nutrients. Filter by meal name or a text search over food descriptions. Use it to find recurring foods or per-meal detail. Caveat: `logged_at` is logging time, not eating time — meal name is the reliable signal for when food was eaten.",
       inputSchema: {
         ...WINDOW_SCHEMA,
         meal: z.string().optional().describe("Only this meal (e.g. \"Breakfast\", \"Snacks\"); case-insensitive."),
@@ -420,11 +420,15 @@ export function registerTools(server: McpServer, getClient: () => MfpClient, tim
       await probe("diary", async () => {
         const f = await client.getDiary(day, { noCache: true });
         const counts: Record<string, number> = {};
-        const samples: Record<string, unknown> = {};
+        const samples: Record<string, string> = {};
         for (const item of f.items) {
           const t = String(item.type ?? "unknown");
           counts[t] = (counts[t] ?? 0) + 1;
-          if (!samples[t]) samples[t] = JSON.parse(JSON.stringify(item).slice(0, 1200).replace(/,?"[^"]*$/, "") + "}");
+          // A string preview, deliberately: truncated JSON must not be re-parsed.
+          if (!samples[t]) {
+            const text = JSON.stringify(item);
+            samples[t] = text.length > 1200 ? `${text.slice(0, 1200)}… (${text.length} chars)` : text;
+          }
         }
         const diary = normalizeDiaryDay(day, f.items);
         return compact({

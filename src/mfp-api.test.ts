@@ -26,6 +26,8 @@ interface FakeOptions {
   /** "any": reject every request with fields[]; "rich": reject only the long set. */
   rejectFields?: "any" | "rich";
   rejectTypes?: string[];
+  /** How the 400 for a rejected type reads: MFP names the type; "generic" does not. */
+  typeErrorStyle?: "named" | "generic";
   pageSize?: number;
   items?: (date: string) => RawItem[];
   measurements?: (date: string) => RawItem[];
@@ -154,7 +156,12 @@ function makeFake(opts: FakeOptions = {}) {
       const types = (url.searchParams.get("types") ?? "").split(",").filter(Boolean);
       if (opts.rejectFields === "any" && fields.length) return bad("unknown field");
       if (opts.rejectFields === "rich" && fields.length > 4) return bad("unknown field");
-      if (opts.rejectTypes?.some((t) => types.includes(t))) return bad("unknown type");
+      const badTypes = (opts.rejectTypes ?? []).filter((t) => types.includes(t));
+      if (badTypes.length) {
+        return opts.typeErrorStyle === "generic"
+          ? bad("Bad request")
+          : json(400, { errors: [{ message: `Unrecognized diary entry type(s): ${badTypes.join(", ")}` }] });
+      }
       const date = url.searchParams.get("entry_date") ?? "";
       const all = (opts.items ?? defaultItems)(date).filter((i) => !types.length || types.includes(String(i.type)));
       const pageSize = opts.pageSize ?? 100;
@@ -303,13 +310,42 @@ describe("getDiary", () => {
     expect(fake.state.diaryRequests.length).toBe(3);
   });
 
-  it("falls back to one type at a time and reports the rejected ones", async () => {
-    const fake = makeFake({ rejectTypes: ["steps_aggregate"] });
+  it("drops exactly the type MFP names in its 400 and keeps the rich field set (the live `water` case)", async () => {
+    const fake = makeFake({ rejectTypes: ["water"] });
+    const f = await client(fake).getDiary("2026-08-25");
+    expect(f.rejected_types).toEqual(["water"]);
+    expect(f.types).toEqual(["food_entry", "diary_meal", "exercise_entry", "steps_aggregate"]);
+    expect(f.fields).toEqual([...DIARY_FIELD_SETS[0]]);
+    expect(fake.state.diaryRequests.length).toBe(2); // one failure, one success
+    expect(f.items.length).toBe(6);
+    expect(f.items.some((i) => i.type === "water")).toBe(false);
+  });
+
+  it("drops several named types at once", async () => {
+    const fake = makeFake({ rejectTypes: ["water", "steps_aggregate"] });
+    const f = await client(fake).getDiary("2026-08-25");
+    expect(f.rejected_types).toEqual(["water", "steps_aggregate"]);
+    expect(f.types).toEqual(["food_entry", "diary_meal", "exercise_entry"]);
+    expect(fake.state.diaryRequests.length).toBe(2);
+  });
+
+  it("with an unhelpful 400, probes one type at a time, then re-tries the field sets with the survivors", async () => {
+    const fake = makeFake({ rejectTypes: ["steps_aggregate"], typeErrorStyle: "generic" });
     const f = await client(fake).getDiary("2026-08-25");
     expect(f.rejected_types).toEqual(["steps_aggregate"]);
     expect(f.types).toEqual(["food_entry", "diary_meal", "exercise_entry", "water"]);
+    expect(f.fields).toEqual([...DIARY_FIELD_SETS[0]]); // fields recovered after the per-type probe
     expect(f.items.length).toBe(6);
     expect(f.items.some((i) => i.type === "steps_aggregate")).toBe(false);
+    // 3 field-set failures + 5 per-type probes + 1 successful rich retry
+    expect(fake.state.diaryRequests.length).toBe(9);
+  });
+
+  it("parses named types out of an error", async () => {
+    const { MfpApiError, namedRejectedTypes } = await import("./mfp-api");
+    const err = new MfpApiError("MyFitnessPal /v2/diary returned HTTP 400: {...}", 400, "/v2/diary", '{"errors":[{"message":"Unrecognized diary entry type(s): water, steps"}]}');
+    expect(namedRejectedTypes(err, ["food_entry", "water", "steps_aggregate"])).toEqual(["water"]);
+    expect(namedRejectedTypes(new Error("x"), ["water"])).toEqual([]);
   });
 
   it("caches completed days but never today", async () => {
