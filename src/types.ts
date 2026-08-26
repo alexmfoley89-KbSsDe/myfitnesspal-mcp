@@ -38,6 +38,8 @@ export interface Env {
   /** OAuth client credentials of the MyFitnessPal mobile app. */
   MFP_CLIENT_ID: string;
   MFP_CLIENT_SECRET: string;
+  /** Public origin of this Worker (for serverInfo icons/websiteUrl). */
+  PUBLIC_URL: string;
   /** IANA tz used to resolve "today" for date defaults. */
   TIME_ZONE: string;
   /** Optional comma-separated allow-list of MFP emails/usernames permitted to connect. */

@@ -36,6 +36,8 @@
     }
   ],
   "vars": {
+    // Public origin of this Worker; used for the connector icon/website advertised to MCP clients.
+    "PUBLIC_URL": "https://myfitnesspal-mcp.a1dancole.workers.dev",
     // IANA timezone used to resolve "today"/"last 7 days" for date defaults.
     "TIME_ZONE": "Europe/London",
     // Optional: comma-separated MyFitnessPal emails/usernames allowed to connect.

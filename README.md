@@ -147,6 +147,22 @@ npx wrangler deploy
 
 Then: *"Run diagnostics on MyFitnessPal, then show me yesterday's nutrition."*
 
+## Connector icon
+
+The Worker advertises `PUBLIC_URL/icon.png` in its MCP `serverInfo.icons`
+(and `websiteUrl`), so clients that render server branding show it in the
+connector list. The default is a generated plate-and-cutlery icon
+(`npm run icon`). To use the official MyFitnessPal app icon instead, save the
+PNG from the App Store / Play Store listing and embed it:
+
+```sh
+npm run icon:embed -- ~/Downloads/myfitnesspal-icon.png   # writes src/icon.ts + assets/icon.png
+npm run deploy
+```
+
+(The official mark is MyFitnessPal's trademark — fine for a personal
+deployment, not for redistribution, which is why it isn't in this repo.)
+
 ## Local development
 
 ```sh
