@@ -93,7 +93,7 @@ function loginPage(opts: { state: string; clientName: string; error?: string; em
     <input id="password" name="password" type="password" required autocomplete="current-password">
     <button type="submit">Sign in &amp; connect</button>
   </form>
-  <p class="fine">Your password is exchanged once, right now, for a MyFitnessPal access token; it is not stored. Only the refresh token is kept, encrypted inside the connector grant. Disconnect the connector in Claude to revoke.</p>
+  <p class="fine">Your password is exchanged once, right now, for a MyFitnessPal access token; it is not stored. Only refresh tokens are kept — encrypted in the connector grant and in the connector's per-user token store, which self-deletes after 30 days without use. Disconnect the connector in Claude to revoke.</p>
 </main></body></html>`;
 }
 

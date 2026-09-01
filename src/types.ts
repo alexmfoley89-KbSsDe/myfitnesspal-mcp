@@ -1,4 +1,5 @@
 import type { OAuthHelpers } from "@cloudflare/workers-oauth-provider";
+import type { MfpTokenCustody } from "./token-custody";
 
 /**
  * Props are produced when the user signs in with their MyFitnessPal account
@@ -33,6 +34,8 @@ export interface Env {
   MFP_CACHE: KVNamespace;
   OAUTH_PROVIDER: OAuthHelpers;
   MCP_OBJECT: DurableObjectNamespace;
+  /** Per-user custodian of the rotating MFP refresh token (single writer). */
+  MFP_TOKEN_CUSTODY: DurableObjectNamespace<MfpTokenCustody>;
   /** Secret used to AES-GCM seal everything written to MFP_CACHE. */
   SESSION_ENCRYPTION_KEY: string;
   /** OAuth client credentials of the MyFitnessPal mobile app. */

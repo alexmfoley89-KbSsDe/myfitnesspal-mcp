@@ -523,16 +523,16 @@ export function registerTools(server: McpServer, getClient: () => MfpClient, tim
     {
       title: "Delete My Cached Data",
       description:
-        "Delete everything this connector has cached for your account (tokens and diary days). Your data in MyFitnessPal is untouched. To fully revoke access, also disconnect the connector in Claude — that deletes the stored refresh token.",
+        "Delete everything this connector stores for your account: cached diary days, the remembered request shape, and the MyFitnessPal token chain held by the token-custody store. Your data in MyFitnessPal is untouched. Also disconnect the connector in Claude to revoke Claude's own access.",
       inputSchema: {},
       annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
     },
     async () => {
       try {
-        const deleted = await getClient().purgeCache();
+        const deleted = await getClient().purgeCache({ tokens: true });
         return jsonResult({
           deleted_cache_entries: deleted,
-          note: "Cached data cleared. Disconnect the connector in Claude (Settings → Connectors) to delete the stored refresh token as well.",
+          note: "Cached data and stored MyFitnessPal tokens deleted. Disconnect the connector in Claude (Settings → Connectors) to revoke Claude's access too.",
         });
       } catch (err) {
         return errorResult(err);

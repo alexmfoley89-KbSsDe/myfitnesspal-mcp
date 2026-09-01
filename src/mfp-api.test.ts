@@ -283,6 +283,41 @@ describe("token lifecycle", () => {
     fake.state.refreshTokens.clear();
     await expect(client(fake).getAccessToken()).rejects.toThrow(MfpAuthError);
   });
+
+  it("delegates tokens to a custody provider and forces it on a 401, never refreshing itself", async () => {
+    const fake = makeFake();
+    fake.state.accessTokens.add("at-p1");
+    fake.state.accessTokens.add("at-p2");
+    let calls = 0;
+    const c = client(fake, {
+      tokenProvider: {
+        getToken: async () => ({ accessToken: ++calls === 1 ? "at-p1" : "at-p2", expiresAt: NOW_MS + 900_000 }),
+      },
+    });
+    await c.getDiary("2026-08-26", { noCache: true });
+    expect(calls).toBe(1);
+    fake.state.revoked.add("at-p1"); // upstream 401 → force through the provider
+    await c.getDiary("2026-08-26", { noCache: true });
+    expect(calls).toBe(2);
+    expect(fake.state.refreshes).toBe(0);
+  });
+
+  it("purges the custody chain only when tokens are explicitly included", async () => {
+    const fake = makeFake();
+    let purges = 0;
+    const c = client(fake, {
+      tokenProvider: {
+        getToken: async () => ({ accessToken: "at-p1", expiresAt: NOW_MS + 900_000 }),
+        purge: async () => {
+          purges++;
+        },
+      },
+    });
+    await c.purgeCache();
+    expect(purges).toBe(0);
+    await c.purgeCache({ tokens: true });
+    expect(purges).toBe(1);
+  });
 });
 
 describe("getDiary", () => {

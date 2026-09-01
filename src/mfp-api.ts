@@ -16,7 +16,9 @@
  * api.myfitnesspal.com/v2 with `Authorization: Bearer`, `mfp-user-id` and
  * `mfp-client-id`.
  *
- * Responsibilities here: token lifecycle (memory → sealed KV → refresh),
+ * Responsibilities here: token lifecycle (memory → the per-user token-custody
+ * Durable Object, which owns the rotating refresh token; a legacy sealed-KV
+ * path remains for tests and providerless use),
  * transport with retry / re-auth, Link-header pagination, a self-tuning diary
  * fetch (the exact `types`/`fields[]` the mobile token accepts are not
  * documented, so it discovers a working combination and remembers it), and
@@ -176,10 +178,20 @@ async function readBody(res: Response): Promise<string> {
 function tokenSetFrom(t: TokenResponse, now: number, fallbackRefresh?: string): TokenSet {
   if (!t.access_token) throw new MfpAuthError("Token response did not include an access_token", undefined, JSON.stringify(t).slice(0, 300));
   const expiresIn = typeof t.expires_in === "number" && t.expires_in > 0 ? t.expires_in : 900;
+  let expiresAt = now + expiresIn * 1000;
+  // MFP has been seen quoting a shorter expires_in than the access token's own
+  // `exp`; every refresh rotates the refresh token, so fewer refreshes means a
+  // sturdier chain. Trust a longer JWT exp, capped at 24h.
+  try {
+    const exp = Number(decodeJwtPayload(t.access_token).exp) * 1000;
+    if (exp > expiresAt && exp <= now + 24 * 60 * 60 * 1000) expiresAt = exp;
+  } catch {
+    // Opaque (non-JWT) access token: keep expires_in.
+  }
   return {
     accessToken: t.access_token,
     refreshToken: t.refresh_token ?? fallbackRefresh ?? "",
-    expiresAt: now + expiresIn * 1000,
+    expiresAt,
   };
 }
 
@@ -329,9 +341,50 @@ export async function fetchIdentityUser(
   return (await res.json()) as IdentityUser;
 }
 
+/**
+ * Exchange a refresh token for a fresh token set. MFP rotates the refresh
+ * token on every call — the previous one is dead the moment this succeeds, so
+ * the caller must durably record the replacement before anything else runs.
+ */
+export async function refreshTokenSet(
+  creds: OAuthClientCredentials,
+  refreshToken: string,
+  opts: { deviceId: string; fetchImpl?: typeof fetch; now?: () => number },
+): Promise<TokenSet> {
+  if (!refreshToken) throw new MfpAuthError("No refresh token available — reconnect the connector");
+  const fetchImpl = opts.fetchImpl ?? fetch;
+  const now = opts.now ?? (() => Date.now());
+  const res = await fetchImpl(`${IDENTITY_BASE}/oauth/token`, {
+    method: "POST",
+    headers: appHeaders(opts.deviceId, { "Content-Type": "application/x-www-form-urlencoded" }),
+    body: new URLSearchParams({
+      grant_type: "refresh_token",
+      refresh_token: refreshToken,
+      client_id: creds.clientId,
+      client_secret: creds.clientSecret,
+    }),
+  });
+  if (!res.ok) {
+    throw new MfpAuthError(`MyFitnessPal token refresh failed (HTTP ${res.status}) — reconnect the connector`, res.status, await readBody(res));
+  }
+  return tokenSetFrom((await res.json()) as TokenResponse, now(), refreshToken);
+}
+
 // ---------------------------------------------------------------------------
 // API client
 // ---------------------------------------------------------------------------
+
+/**
+ * External custodian of the MFP token chain — in production the per-user
+ * token-custody Durable Object (see token-custody.ts), which serialises
+ * refreshes across every MCP session so the rotating refresh token is never
+ * raced or lost. When present it replaces the client's own refresh/KV path.
+ */
+export interface TokenProvider {
+  getToken(req: { force?: boolean }): Promise<{ accessToken: string; expiresAt: number }>;
+  peek?(): Promise<{ expiresAt?: number }>;
+  purge?(): Promise<void>;
+}
 
 export interface MfpClientOptions {
   creds: OAuthClientCredentials;
@@ -346,6 +399,8 @@ export interface MfpClientOptions {
   timeZone: string;
   cache?: KVNamespace;
   sealSecret?: string;
+  /** When set, all token refreshes are delegated to this custodian. */
+  tokenProvider?: TokenProvider;
   fetchImpl?: typeof fetch;
   now?: () => number;
 }
@@ -384,6 +439,7 @@ export class MfpClient {
   readonly timeZone: string;
   private readonly cache?: KVNamespace;
   private readonly sealSecret?: string;
+  private readonly tokenProvider?: TokenProvider;
   private readonly fetchImpl: typeof fetch;
   private readonly now: () => number;
   private readonly deviceId: string;
@@ -403,6 +459,7 @@ export class MfpClient {
     this.timeZone = opts.timeZone;
     this.cache = opts.cache;
     this.sealSecret = opts.sealSecret;
+    this.tokenProvider = opts.tokenProvider;
     this.fetchImpl = opts.fetchImpl ?? ((input, init) => fetch(input, init));
     this.now = opts.now ?? (() => Date.now());
     this.deviceId = deviceIdFor(opts.userHash);
@@ -449,11 +506,17 @@ export class MfpClient {
     }
   }
 
-  /** Delete every cached entry for this user (tokens, config, diary days). */
-  async purgeCache(): Promise<number> {
+  /**
+   * Delete every cached KV entry for this user (config, diary days, legacy
+   * token). Pass `tokens: true` to also wipe the custody DO's token chain —
+   * only for full data deletion; a purged chain forces re-connecting unless a
+   * fresh grant seed exists.
+   */
+  async purgeCache(opts: { tokens?: boolean } = {}): Promise<number> {
     this.token = undefined;
     this.diaryConfig = undefined;
     this.identityUser = undefined;
+    if (opts.tokens) await this.tokenProvider?.purge?.();
     if (!this.cache) return 0;
     const prefix = this.key("");
     let count = 0;
@@ -475,9 +538,15 @@ export class MfpClient {
     return Boolean(t && t.accessToken && t.expiresAt - TOKEN_SAFETY_MS > this.now());
   }
 
-  /** A valid access token: memory → sealed KV → refresh. */
+  /** A valid access token: memory → custody DO, or (legacy) sealed KV → refresh. */
   async getAccessToken(force = false): Promise<string> {
     if (!force && this.usable(this.token)) return this.token.accessToken;
+
+    if (this.tokenProvider) {
+      const t = await this.tokenProvider.getToken({ force });
+      this.token = { accessToken: t.accessToken, refreshToken: "", expiresAt: t.expiresAt };
+      return t.accessToken;
+    }
 
     const stored = await this.cacheGet<TokenSet>(this.key("token"));
     if (!force && this.usable(stored)) {
@@ -497,28 +566,18 @@ export class MfpClient {
   }
 
   /** Current token state, for diagnostics. */
-  async peekToken(): Promise<{ source: "memory" | "kv" | "none"; expiresAt?: number }> {
+  async peekToken(): Promise<{ source: "memory" | "custody" | "kv" | "none"; expiresAt?: number }> {
     if (this.token) return { source: "memory", expiresAt: this.token.expiresAt };
+    if (this.tokenProvider?.peek) {
+      const p = await this.tokenProvider.peek();
+      if (p.expiresAt) return { source: "custody", expiresAt: p.expiresAt };
+    }
     const stored = await this.cacheGet<TokenSet>(this.key("token"));
     return stored ? { source: "kv", expiresAt: stored.expiresAt } : { source: "none" };
   }
 
-  private async refresh(refreshToken: string): Promise<TokenSet> {
-    if (!refreshToken) throw new MfpAuthError("No refresh token available — reconnect the connector");
-    const res = await this.fetchImpl(`${IDENTITY_BASE}/oauth/token`, {
-      method: "POST",
-      headers: appHeaders(this.deviceId, { "Content-Type": "application/x-www-form-urlencoded" }),
-      body: new URLSearchParams({
-        grant_type: "refresh_token",
-        refresh_token: refreshToken,
-        client_id: this.creds.clientId,
-        client_secret: this.creds.clientSecret,
-      }),
-    });
-    if (!res.ok) {
-      throw new MfpAuthError(`MyFitnessPal token refresh failed (HTTP ${res.status}) — reconnect the connector`, res.status, await readBody(res));
-    }
-    return tokenSetFrom((await res.json()) as TokenResponse, this.now(), refreshToken);
+  private refresh(refreshToken: string): Promise<TokenSet> {
+    return refreshTokenSet(this.creds, refreshToken, { deviceId: this.deviceId, fetchImpl: this.fetchImpl, now: this.now });
   }
 
   // -------------------------------------------------------------------------
