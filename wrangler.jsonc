@@ -46,10 +46,8 @@
   ],
   "vars": {
     "PUBLIC_URL": "https://myfitnesspal-mcp.alexmfoley89.workers.dev",
-    "TIME_ZONE": "Europe/Berlin",
-    "ALLOWED_EMAILS": "deployment-not-configured.invalid"
+    "TIME_ZONE": "Europe/Berlin"
   }
-  // Set PUBLIC_URL to this Worker's origin after deployment.
-  // Replace ALLOWED_EMAILS with a Cloudflare secret containing the allowed MFP login.
+  // ALLOWED_EMAILS is managed as a private Cloudflare runtime secret.
   // Secrets: SESSION_ENCRYPTION_KEY, MFP_CLIENT_ID, MFP_CLIENT_SECRET.
 }
