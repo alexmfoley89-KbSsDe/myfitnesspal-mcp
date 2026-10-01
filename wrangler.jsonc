@@ -45,7 +45,7 @@
     }
   ],
   "vars": {
-    "PUBLIC_URL": "",
+    "PUBLIC_URL": "https://myfitnesspal-mcp.alexmfoley89.workers.dev",
     "TIME_ZONE": "Europe/Berlin",
     "ALLOWED_EMAILS": "deployment-not-configured.invalid"
   }
